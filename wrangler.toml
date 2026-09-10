@@ -1,5 +1,5 @@
 name = "cfnew"
-main = "./明文源吗"
+main = "./worker.js"
 compatibility_date = "2026-01-20"
 compatibility_flags = ["nodejs_compat"]
 
