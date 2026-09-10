@@ -20,9 +20,9 @@ jobs:
   deploy:
     name: Deploy Worker + Setup KV
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC authentication with Cloudflare
 
     steps:
       - name: Checkout repository
@@ -36,22 +36,33 @@ jobs:
       - name: Install Wrangler
         run: npm install -g wrangler
 
-      - name: Validate Cloudflare credentials
+      - name: Authenticate with Cloudflare (OIDC)
         run: |
-          echo "Checking Cloudflare credentials..."
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "❌ Missing Cloudflare credentials!"
+          echo "=== Cloudflare Authentication via OIDC ==="
+          echo "Using GitHub OIDC for passwordless authentication..."
+          echo ""
+          echo "Configuration details:"
+          echo "- Organization: $GITHUB_REPOSITORY_OWNER"
+          echo "- Repository: ${{ github.repository }}"
+          echo "- Branch: main"
+          echo ""
+          
+          # Verify wrangler can authenticate
+          if ! wrangler whoami > /dev/null 2>&1; then
+            echo "❌ OIDC authentication failed!"
             echo ""
-            echo "Please add these secrets to your repository:"
-            echo "  - CLOUDFLARE_API_TOKEN (API token with Workers edit permissions)"
-            echo "  - CLOUDFLARE_ACCOUNT_ID (your account ID from Cloudflare dashboard)"
-            echo ""
-            echo "Go to: https://github.com/miladjahani-star/cfnew/settings/secrets/actions"
-            echo "Or generate API token: https://dash.cloudflare.com/profile/api-tokens"
+            echo "Please ensure you have configured Cloudflare API Token with OIDC trust:"
+            echo "1. Go to https://dash.cloudflare.com/profile/api-tokens"
+            echo "2. Create API Token with 'Edit Cloudflare Workers' template"
+            echo "3. Under 'Advanced', add GitHub OIDC trust:"
+            echo "   - Organization: $GITHUB_REPOSITORY_OWNER"
+            echo "   - Repository: ${{ github.repository }}"
+            echo "   - Branch: main"
+            echo "4. Save the token"
             exit 1
           fi
-          echo "✅ Credentials found (API Token: ${#CLOUDFLARE_API_TOKEN} chars, Account ID: ${#CLOUDFLARE_ACCOUNT_ID} chars)"
-          echo "Running wrangler whoami..."
+          
+          echo "✅ Successfully authenticated with Cloudflare"
           wrangler whoami
 
       - name: Setup KV Namespace (idempotent)
@@ -59,32 +70,32 @@ jobs:
         run: |
           echo "=== KV Namespace Setup ==="
           echo "Checking current configuration..."
-          
+
           # Check if wrangler.toml already has a real KV ID
-          KV_ID=$(grep -A2 'binding = "C"' wrangler.toml | grep 'id = ' | head -1 | sed 's/.*id = "\(.*\)"/\1/')
-          
+          KV_ID=$(grep -A2 'binding = "C"' wrangler.toml | grep 'id = ' | head -1 | sed 's/.*id = "\([^"]*\)".*/\1/')
+
           if [ "$KV_ID" != "AUTO_SETUP_KV" ] && [ -n "$KV_ID" ]; then
             echo "✅ KV namespace already configured: $KV_ID"
             echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
           else
             echo "Creating new KV namespace named 'C'..."
-            
+
             # Create namespace - capture create output
             CREATE_OUTPUT=$(wrangler kv namespace create "C" 2>&1)
             echo "$CREATE_OUTPUT"
-            
+
             # Extract ID from create output (wrangler prints: "with id \"xxx\"")
             NEW_ID=$(echo "$CREATE_OUTPUT" | grep -oP 'with id "\K[^"]+' | head -1)
-            
+
             if [ -z "$NEW_ID" ]; then
               echo "❌ Failed to create KV namespace"
               echo "Full output: $CREATE_OUTPUT"
               exit 1
             fi
-            
+
             echo "✅ Created KV namespace: $NEW_ID"
             echo "kv_id=$NEW_ID" >> $GITHUB_OUTPUT
-            
+
             # Update wrangler.toml with real ID
             sed -i "s/AUTO_SETUP_KV/$NEW_ID/g" wrangler.toml
             echo "Updated wrangler.toml with real KV namespace ID"
@@ -94,19 +105,19 @@ jobs:
         run: |
           echo "=== Deploying Worker ==="
           wrangler deploy
-          
+
           echo ""
           echo "=== Deployment Summary ==="
           WORKER_NAME=$(grep '^name' wrangler.toml | cut -d'"' -f2)
           KV_ID=${{ steps.kv-setup.outputs.kv_id }}
-          
+
           echo "Worker Name: $WORKER_NAME"
           echo "KV Namespace ID: $KV_ID"
           echo ""
           echo "✅ Worker deployed successfully!"
-          echo "URL: https://$WORKER_NAME.${CLOUDFLARE_ACCOUNT_ID}.workers.dev"
+          echo "URL: https://$WORKER_NAME.workers.dev"
           echo "Admin Panel: visit /{YOUR_UUID} to configure"
-          
+
       - name: Commit KV config update (if created)
         run: |
           if git diff --quiet wrangler.toml; then
@@ -132,6 +143,6 @@ jobs:
           echo "| Worker | $WORKER_NAME |" >> $GITHUB_STEP_SUMMARY
           echo "| KV Binding | C |" >> $GITHUB_STEP_SUMMARY
           echo "| KV Namespace ID | $KV_ID |" >> $GITHUB_STEP_SUMMARY
-          echo "| URL | https://$WORKER_NAME.${CLOUDFLARE_ACCOUNT_ID}.workers.dev |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://$WORKER_NAME.workers.dev |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ Deployment completed successfully" >> $GITHUB_STEP_SUMMARY
