@@ -7,12 +7,22 @@ on:
     paths:
       - '明文源吗'
       - 'wrangler.toml'
+      - '.github/workflows/auto-deploy.yml'
   workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   deploy:
     name: Deploy Worker + Setup KV
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
     steps:
       - name: Checkout repository
@@ -28,40 +38,47 @@ jobs:
 
       - name: Validate Cloudflare credentials
         run: |
+          echo "Checking Cloudflare credentials..."
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "❌ Missing Cloudflare credentials!"
+            echo ""
             echo "Please add these secrets to your repository:"
-            echo "  - CLOUDFLARE_API_TOKEN"
-            echo "  - CLOUDFLARE_ACCOUNT_ID"
+            echo "  - CLOUDFLARE_API_TOKEN (API token with Workers edit permissions)"
+            echo "  - CLOUDFLARE_ACCOUNT_ID (your account ID from Cloudflare dashboard)"
+            echo ""
+            echo "Go to: https://github.com/miladjahani-star/cfnew/settings/secrets/actions"
+            echo "Or generate API token: https://dash.cloudflare.com/profile/api-tokens"
             exit 1
           fi
-          echo "✅ Cloudflare credentials found"
+          echo "✅ Credentials found (API Token: ${#CLOUDFLARE_API_TOKEN} chars, Account ID: ${#CLOUDFLARE_ACCOUNT_ID} chars)"
+          echo "Running wrangler whoami..."
           wrangler whoami
 
       - name: Setup KV Namespace (idempotent)
         id: kv-setup
         run: |
-          echo "Checking KV namespace configuration..."
+          echo "=== KV Namespace Setup ==="
+          echo "Checking current configuration..."
           
           # Check if wrangler.toml already has a real KV ID
-          CURRENT_ID=$(grep -A2 'binding = "C"' wrangler.toml | grep 'id = ' | head -1 | sed 's/.*id = "\(.*\)"/\1/')
+          KV_ID=$(grep -A2 'binding = "C"' wrangler.toml | grep 'id = ' | head -1 | sed 's/.*id = "\(.*\)"/\1/')
           
-          if [ "$CURRENT_ID" != "AUTO_SETUP_KV" ] && [ -n "$CURRENT_ID" ]; then
-            echo "✅ KV namespace already configured: $CURRENT_ID"
-            echo "kv_id=$CURRENT_ID" >> $GITHUB_OUTPUT
+          if [ "$KV_ID" != "AUTO_SETUP_KV" ] && [ -n "$KV_ID" ]; then
+            echo "✅ KV namespace already configured: $KV_ID"
+            echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
           else
-            echo "Creating new KV namespace 'C'..."
+            echo "Creating new KV namespace named 'C'..."
             
-            # Create the namespace and capture output
-            OUTPUT=$(wrangler kv namespace create "C" 2>&1)
-            echo "$OUTPUT"
+            # Create namespace - capture create output
+            CREATE_OUTPUT=$(wrangler kv namespace create "C" 2>&1)
+            echo "$CREATE_OUTPUT"
             
-            # Extract the ID from output (format: ... with id "xxx" ...)
-            NEW_ID=$(echo "$OUTPUT" | grep -oP 'with id "\K[^"]+' | head -1)
+            # Extract ID from create output (wrangler prints: "with id \"xxx\"")
+            NEW_ID=$(echo "$CREATE_OUTPUT" | grep -oP 'with id "\K[^"]+' | head -1)
             
             if [ -z "$NEW_ID" ]; then
               echo "❌ Failed to create KV namespace"
-              echo "Output was: $OUTPUT"
+              echo "Full output: $CREATE_OUTPUT"
               exit 1
             fi
             
@@ -75,50 +92,46 @@ jobs:
 
       - name: Deploy to Cloudflare Workers
         run: |
-          echo "Deploying CFnew Worker..."
+          echo "=== Deploying Worker ==="
           wrangler deploy
           
           echo ""
-          echo "=== Deployment Complete ==="
-          
-          # Get the worker URL
+          echo "=== Deployment Summary ==="
           WORKER_NAME=$(grep '^name' wrangler.toml | cut -d'"' -f2)
-          ACCOUNT_ID_LEN=${#CLOUDFLARE_ACCOUNT_ID}
-          echo "Worker: $WORKER_NAME"
-          echo "Account ID: ${CLOUDFLARE_ACCOUNT_ID:0:8}..."
+          KV_ID=${{ steps.kv-setup.outputs.kv_id }}
+          
+          echo "Worker Name: $WORKER_NAME"
+          echo "KV Namespace ID: $KV_ID"
           echo ""
-          echo "Worker URL: https://$WORKER_NAME.${CLOUDFLARE_ACCOUNT_ID}.workers.dev"
-          echo "Admin Panel: Visit /{YOUR_UUID} after deployment"
-
+          echo "✅ Worker deployed successfully!"
+          echo "URL: https://$WORKER_NAME.${CLOUDFLARE_ACCOUNT_ID}.workers.dev"
+          echo "Admin Panel: visit /{YOUR_UUID} to configure"
+          
       - name: Commit KV config update (if created)
         run: |
           if git diff --quiet wrangler.toml; then
-            echo "No changes to wrangler.toml"
+            echo "No changes needed to wrangler.toml"
           else
-            echo "KV namespace ID was auto-configured, committing..."
+            echo "Auto-configuring KV namespace ID..."
             git config --global user.name 'GitHub Actions Bot'
             git config --global user.email 'github-actions[bot]@users.noreply.github.com'
             git add wrangler.toml
             git commit -m "chore: auto-configure KV namespace ID [skip ci]"
             git push
+            echo "Committed KV configuration"
           fi
 
-      - name: Output deployment summary
+      - name: Summary
         run: |
           WORKER_NAME=$(grep '^name' wrangler.toml | cut -d'"' -f2)
-          KV_ID=$(grep -A2 'binding = "C"' wrangler.toml | grep 'id = ' | head -1 | sed 's/.*id = "\(.*\)"/\1/')
-          
+          KV_ID=${{ steps.kv-setup.outputs.kv_id || 'not created' }}
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Worker Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Name:** $WORKER_NAME" >> $GITHUB_STEP_SUMMARY
-          echo "- **Source:** 明文源吗" >> $GITHUB_STEP_SUMMARY
-          echo "- **Compatibility Date:** 2026-01-20" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker | $WORKER_NAME |" >> $GITHUB_STEP_SUMMARY
+          echo "| KV Binding | C |" >> $GITHUB_STEP_SUMMARY
+          echo "| KV Namespace ID | $KV_ID |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://$WORKER_NAME.${CLOUDFLARE_ACCOUNT_ID}.workers.dev |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### KV Storage" >> $GITHUB_STEP_SUMMARY
-          echo "- **Binding:** C" >> $GITHUB_STEP_SUMMARY
-          echo "- **Namespace ID:** $KV_ID" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Access" >> $GITHUB_STEP_SUMMARY
-          echo "- **Worker URL:** https://$WORKER_NAME.${CLOUDFLARE_ACCOUNT_ID}.workers.dev" >> $GITHUB_STEP_SUMMARY
-          echo "- **Admin Panel:** Visit \`/{YOUR_UUID}\` after deployment" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Deployment completed successfully" >> $GITHUB_STEP_SUMMARY
