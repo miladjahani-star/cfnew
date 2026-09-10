@@ -7,6 +7,6 @@ compatibility_flags = ["nodejs_compat"]
 # The namespace ID will be auto-configured by the deploy workflow
 [[kv_namespaces]]
 binding = "C"
-id = "AUTO_SETUP_KV"
+id = "412fae1091d1413395c8d8c17b334487"
 # preview_id is used by `wrangler dev` - set to same as id for local dev
-preview_id = "AUTO_SETUP_KV"
+preview_id = "412fae1091d1413395c8d8c17b334487"
