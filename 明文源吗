@@ -508,6 +508,83 @@ async function 设置配置值(键764, 值763) {
   键值配置[键764] = 值763;
   await 保存键值配置();
 }
+
+// ===== 多用户管理（KV users：管理员创建子账号出售给终端用户）=====
+let 用户列表缓存 = null;
+let 用户列表缓存时间 = 0;
+let 用户列表版本 = 0;
+let 有效用户UUID集合 = null;
+let 有效用户SHA224集合 = null;
+let 有效用户SHA224版本 = -1;
+
+async function 读取用户列表(强制 = false) {
+  if (!键值存储) return [];
+  if (!强制 && 用户列表缓存 && Date.now() - 用户列表缓存时间 < 2000) return 用户列表缓存;
+  try {
+    const 数据 = await 键值存储.get('users');
+    用户列表缓存 = 数据 ? JSON.parse(数据) : [];
+    if (!Array.isArray(用户列表缓存)) 用户列表缓存 = [];
+    用户列表缓存时间 = Date.now();
+  } catch (错误) {
+    if (!用户列表缓存 || !Array.isArray(用户列表缓存)) 用户列表缓存 = [];
+  }
+  return 用户列表缓存;
+}
+async function 保存用户列表(列表) {
+  用户列表缓存 = Array.isArray(列表) ? 列表 : [];
+  用户列表缓存时间 = Date.now();
+  用户列表版本++;
+  if (键值存储) await 键值存储.put('users', JSON.stringify(用户列表缓存));
+}
+async function 刷新有效用户集合() {
+  try {
+    const 列表 = await 读取用户列表();
+    const 集合 = new Set();
+    for (const 用户 of 列表) {
+      if (用户.enabled !== false && 用户.uuid && 是否有效格式(用户.uuid)) {
+        集合.add(用户.uuid.toLowerCase());
+      }
+    }
+    有效用户UUID集合 = 集合;
+    if (!传输路径 && 集合.size > 0 && 有效用户SHA224版本 !== 用户列表版本) {
+      const 哈希集合 = new Set();
+      for (const 标识 of 集合) {
+        try {
+          哈希集合.add(await 处理值224井号(标识));
+        } catch (忽略) {}
+      }
+      有效用户SHA224集合 = 哈希集合;
+      有效用户SHA224版本 = 用户列表版本;
+    } else if (传输路径) {
+      有效用户SHA224集合 = null;
+    }
+  } catch (错误) {
+    if (!有效用户UUID集合) 有效用户UUID集合 = new Set();
+  }
+}
+function 生成新唯一标识() {
+  try {
+    return crypto.randomUUID();
+  } catch (错误) {
+    const 值 = [];
+    for (let 索引 = 0; 索引 < 32; 索引++) 值.push(Math.floor(Math.random() * 16).toString(16));
+    const 字符串 = 值.join('');
+    return 字符串.slice(0, 8) + '-' + 字符串.slice(8, 12) + '-4' + 字符串.slice(13, 16) + '-' + ['8', '9', 'a', 'b'][Math.floor(Math.random() * 4)] + 字符串.slice(17, 20) + '-' + 字符串.slice(20, 32);
+  }
+}
+function 是否有效用户唯一标识(字节, 偏移 = 0) {
+  if (!有效用户UUID集合 || 有效用户UUID集合.size === 0) return false;
+  try {
+    return 有效用户UUID集合.has(处理格式值(字节, 偏移));
+  } catch (忽略) {
+    return false;
+  }
+}
+async function 是否为已启用用户(唯一标识) {
+  const 列表 = await 读取用户列表();
+  const 匹配 = 列表.find(项 => (项.uuid || '').toLowerCase() === (唯一标识 || '').toLowerCase());
+  return !!匹配 && 匹配.enabled !== false;
+}
 async function 检查地址可用性(域名760, 端口759 = 443, 超时758 = 2000) {
   try {
     const 控制器757 = new AbortController();
@@ -619,7 +696,8 @@ export default {
         const 值值727 = (本地值734.d || 本地值734.D || '').toLowerCase();
         const 首次值 = 路径值730[0] || '';
         const 清理值 = 值值727.startsWith('/') ? 值值727.substring(1) : 值值727;
-        if (首次值 !== 值值728 && (清理值 ? 首次值 !== 清理值 : false)) {
+        // 多用户支持：UUID 格式的首段放行，后续在路由中校验是否为已注册用户
+        if (首次值 !== 值值728 && (清理值 ? 首次值 !== 清理值 : false) && !是否有效格式(首次值)) {
           return new Response('Not Found', {
             status: 404
           });
@@ -736,7 +814,43 @@ export default {
       }
       优选地址源 = 获取配置文本值('yxURL', 配置默认值.yxURL, 本地值734.yxURL || 本地值734.YXURL);
       自定义路径 = 获取配置文本值('d', 配置默认值.d, 本地值734.d || 本地值734.D);
+      await 刷新有效用户集合();
       const 网址698 = new URL(请求735.url);
+      if (网址698.pathname.includes('/api/users')) {
+        const 路径部分列表699 = 网址698.pathname.split('/').filter(参数值698 => 参数值698);
+        const 接口索引697 = 路径部分列表699.indexOf('api');
+        if (接口索引697 > 0) {
+          const 路径值696 = 路径部分列表699.slice(0, 接口索引697);
+          const 路径值695 = 路径值696.join('/');
+          let 是否有效694 = false;
+          if (自定义路径 && 自定义路径.trim()) {
+            const 清理自定义路径693 = 自定义路径.trim().startsWith('/') ? 自定义路径.trim().substring(1) : 自定义路径.trim();
+            是否有效694 = 路径值695 === 清理自定义路径693;
+          } else {
+            是否有效694 = 是否有效格式(路径值695) && 路径值695 === 认证令牌;
+          }
+          if (是否有效694) {
+            return await 处理用户接口(请求735);
+          } else {
+            return new Response(JSON.stringify({
+              error: '路径验证失败'
+            }), {
+              status: 403,
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            });
+          }
+        }
+        return new Response(JSON.stringify({
+          error: '无效的API路径'
+        }), {
+          status: 404,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
       if (网址698.pathname.includes('/api/config')) {
         const 路径部分列表697 = 网址698.pathname.split('/').filter(参数值696 => 参数值696);
         const 接口索引695 = 路径部分列表697.indexOf('api');
@@ -1615,9 +1729,16 @@ document.addEventListener('DOMContentLoaded', function () {
           if (网址698.pathname.length > 1 && 网址698.pathname !== '/') {
             const 用户658 = 网址698.pathname.replace(/\/$/, '').replace('/sub', '').substring(1);
             if (是否有效格式(用户658)) {
+              // 多用户支持：自定义路径模式下，已注册且启用的用户 UUID 路径仍然有效
+              if (await 是否为已启用用户(用户658)) {
+                if (网址698.pathname.endsWith('/sub')) {
+                  return await 处理订阅请求(请求735, 用户658, 网址698);
+                }
+                return await 处理订阅值(请求735, 用户658);
+              }
               return new Response(JSON.stringify({
                 error: '访问被拒绝',
-                message: '当前 Worker 已启用自定义路径模式，UUID 访问已禁用'
+                message: 'UUID未注册或已停用'
               }), {
                 status: 403,
                 headers: {
@@ -1631,6 +1752,8 @@ document.addEventListener('DOMContentLoaded', function () {
             const 用户657 = 网址698.pathname.replace(/\/$/, '').substring(1);
             if (是否有效格式(用户657)) {
               if (用户657 === 认证令牌) {
+                return await 处理订阅值(请求735, 用户657);
+              } else if (await 是否为已启用用户(用户657)) {
                 return await 处理订阅值(请求735, 用户657);
               } else {
                 return new Response(JSON.stringify({
@@ -1650,6 +1773,8 @@ document.addEventListener('DOMContentLoaded', function () {
               const 用户656 = 路径部分列表[0].substring(1);
               if (是否有效格式(用户656)) {
                 if (用户656 === 认证令牌) {
+                  return await 处理订阅请求(请求735, 用户656, 网址698);
+                } else if (await 是否为已启用用户(用户656)) {
                   return await 处理订阅请求(请求735, 用户656, 网址698);
                 } else {
                   return new Response(JSON.stringify({
@@ -3547,7 +3672,7 @@ function 解析网页套接字值头部(块297, 令牌) {
     message: 错误_无效数据
   };
   const 本地值295 = 字节296.subarray(0, 1);
-  if (!处理值唯一标识(字节296, 1, 令牌)) return {
+  if (!处理值唯一标识(字节296, 1, 令牌) && !是否有效用户唯一标识(字节296, 1)) return {
     hasError: true,
     message: 错误_无效用户
   };
@@ -3975,6 +4100,7 @@ function 解析代理配置(地址249) {
 }
 async function 处理订阅值(请求241, 用户240 = null) {
   if (!用户240) 用户240 = 认证令牌;
+  const 是否管理员 = 用户240 === 认证令牌;
   const 网址239 = new URL(请求241.url);
   // 优先检查Cookie中的语言设置
   const 凭据头部 = 请求241.headers.get('Cookie') || '';
@@ -4152,7 +4278,35 @@ async function 处理订阅值(请求241, 用户240 = null) {
       kvNotEnabled: 'KV存储未配置',
       kvCheckFailed: 'KV存储检测失败: 响应格式错误',
       kvCheckFailedStatus: 'KV存储检测失败 - 状态码: ',
-      kvCheckFailedError: 'KV存储检测失败 - 错误: '
+      kvCheckFailedError: 'KV存储检测失败 - 错误: ',
+      userManagement: '用户管理',
+      userManagementDesc: '创建子账号出售给终端用户，每个用户拥有独立 UUID 和订阅链接',
+      createUser: '创建用户',
+      userNamePlaceholder: '用户名称（可选）',
+      userNote: '提示：用户订阅链接为 https://你的域名/用户UUID/sub',
+      noUsers: '暂无用户，点击上方按钮创建',
+      userNameCol: '名称',
+      userStatusCol: '状态',
+      userActions: '操作',
+      userEnabled: '启用',
+      userDisabled: '停用',
+      copySub: '复制订阅',
+      copyUuid: '复制UUID',
+      enableUser: '启用',
+      disableUser: '停用',
+      deleteUser: '删除',
+      confirmDeleteUser: '确定要删除该用户吗？删除后该用户将无法再使用订阅。',
+      userCreated: '用户创建成功',
+      userDeleted: '用户已删除',
+      userUpdated: '用户状态已更新',
+      userLoadFailed: '加载用户列表失败',
+      userCreateFailed: '创建用户失败',
+      userUpdateFailed: '操作失败',
+      uuidCopied: 'UUID 已复制',
+      subCopied: '订阅链接已复制',
+      copyFailed: '复制失败，请手动复制',
+      kvRequiredForUsers: '需要 KV 存储才能管理用户',
+      loadingUsers: '加载中...'
     },
     fa: {
       title: 'مرکز اشتراک',
@@ -4305,7 +4459,35 @@ async function 处理订阅值(请求241, 用户240 = null) {
       kvNotEnabled: 'ذخیره‌سازی KV پیکربندی نشده است',
       kvCheckFailed: 'بررسی ذخیره‌سازی KV ناموفق: خطای فرمت پاسخ',
       kvCheckFailedStatus: 'بررسی ذخیره‌سازی KV ناموفق - کد وضعیت: ',
-      kvCheckFailedError: 'بررسی ذخیره‌سازی KV ناموفق - خطا: '
+      kvCheckFailedError: 'بررسی ذخیره‌سازی KV ناموفق - خطا: ',
+      userManagement: 'مدیریت کاربران',
+      userManagementDesc: 'حساب‌های کاربری بسازید و مدیریت کنید تا به کاربران نهایی بفروشید؛ هر کاربر UUID و لینک اشتراک مستقل دارد',
+      createUser: 'ایجاد کاربر',
+      userNamePlaceholder: 'نام کاربر (اختیاری)',
+      userNote: 'نکته: لینک اشتراک کاربر: https://دامنه‌ی شما/UUID کاربر/sub',
+      noUsers: 'کاربری وجود ندارد، با دکمه بالا بسازید',
+      userNameCol: 'نام',
+      userStatusCol: 'وضعیت',
+      userActions: 'عملیات',
+      userEnabled: 'فعال',
+      userDisabled: 'غیرفعال',
+      copySub: 'کپی اشتراک',
+      copyUuid: 'کپی UUID',
+      enableUser: 'فعال‌سازی',
+      disableUser: 'غیرفعال‌سازی',
+      deleteUser: 'حذف',
+      confirmDeleteUser: 'آیا از حذف این کاربر مطمئن هستید؟ پس از حذف، اشتراک او کار نخواهد کرد.',
+      userCreated: 'کاربر با موفقیت ایجاد شد',
+      userDeleted: 'کاربر حذف شد',
+      userUpdated: 'وضعیت کاربر به‌روزرسانی شد',
+      userLoadFailed: 'بارگذاری لیست کاربران ناموفق',
+      userCreateFailed: 'ایجاد کاربر ناموفق',
+      userUpdateFailed: 'عملیات ناموفق',
+      uuidCopied: 'UUID کپی شد',
+      subCopied: 'لینک اشتراک کپی شد',
+      copyFailed: 'کپی ناموفق، لطفا دستی کپی کنید',
+      kvRequiredForUsers: 'برای مدیریت کاربران به ذخیره‌سازی KV نیاز است',
+      loadingUsers: 'در حال بارگذاری...'
     }
   };
   const 翻译值 = 本地值235[是否值236 ? 'fa' : 'zh'];
@@ -5604,6 +5786,18 @@ async function 处理订阅值(请求241, 用户240 = null) {
                             <div style="font-weight: bold; margin-bottom: 8px; color: #00ff9d; text-shadow: 0 0 5px #00ff9d;">${翻译值.currentConfig}</div>
                             <div id="pathTypeStatus">${翻译值.checking}</div>
                     </div>
+                    <div id="userManagement" style="background: rgba(15, 3, 40, 0.7); border: 1px solid #00f0ff; padding: 15px; margin: 10px 0; font-family: 'Courier New', monospace;">
+                            <div style="font-weight: bold; margin-bottom: 8px; color: #00ff9d; text-shadow: 0 0 5px #00ff9d;">${翻译值.userManagement}</div>
+                            <div style="color: #7aa9c4; font-size: 0.85rem; margin-bottom: 12px;">${翻译值.userManagementDesc}</div>
+                            <div style="color: #7aa9c4; font-size: 0.8rem; margin-bottom: 12px;">${翻译值.userNote}</div>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
+                                <input type="text" id="newUserName" placeholder="${翻译值.userNamePlaceholder}" style="flex: 1; min-width: 180px; padding: 10px; background: rgba(0, 0, 0, 0.8); border: 1px solid #00f0ff; color: #00f0ff; font-family: 'Courier New', monospace; font-size: 13px;">
+                                <button type="button" onclick="创建新用户()" style="padding: 10px 18px; background: linear-gradient(135deg, #00f0ff, #00b8c4); color: #05030e; border: none; cursor: pointer; font-weight: bold; font-family: 'Courier New', monospace;">${翻译值.createUser}</button>
+                            </div>
+                            <div id="userList" style="color: #7aa9c4; font-size: 0.85rem;">
+                                <div>${翻译值.loading}</div>
+                            </div>
+                    </div>
                 </div>
                 <div id="statusMessage" style="display: none; padding: 10px; margin: 10px 0; border: 1px solid #00f0ff; background: rgba(8, 4, 28, 0.8); color: #00f0ff; text-shadow: 0 0 5px #00f0ff;"></div>
             </div>
@@ -5639,16 +5833,64 @@ async function 处理订阅值(请求241, 用户240 = null) {
 var 订阅转换网址 = "${订阅转换接口}";
 // 远程配置URL（硬编码）
 var 远程配置网址 = "${远程配置网址}";
+// 服务器注入：当前访问者是否为管理员
+var 是否管理员 = ${是否管理员};
 
 // 翻译对象
 const 本地值20215 = {
   zh: {
     subscriptionCopied: '${解码64('6K6i6ZiF6ZO+5o6l5bey5aSN5Yi2')}',
-    autoSubscriptionCopied: '${解码64('6Ieq5Yqo6K+G5Yir6K6i6ZiF6ZO+5o6l5bey5aSN5Yi277yM5a6i5oi356uv6K6/6Zeu5pe25Lya5qC55o2uVXNlci1BZ2VudOiHquWKqOivhuWIq+W5tui/lOWbnuWvueW6lOagvOW8jw==')}'
+    autoSubscriptionCopied: '${解码64('6Ieq5Yqo6K+G5Yir6K6i6ZiF6ZO+5o6l5bey5aSN5Yi277yM5a6i5oi356uv6K6/6Zeu5pe25Lya5qC55o2uVXNlci1BZ2VudOiHquWKqOivhuWIq+W5tui/lOWbnuWvueW6lOagvOW8jw==')}',
+    loadingUsers: '加载中...',
+    noUsers: '暂无用户',
+    userNameCol: '名称',
+    userStatusCol: '状态',
+    userActions: '操作',
+    userEnabled: '启用',
+    userDisabled: '停用',
+    copySub: '复制订阅',
+    copyUuid: '复制UUID',
+    enableUser: '启用',
+    disableUser: '停用',
+    deleteUser: '删除',
+    confirmDeleteUser: '确定要删除该用户吗？',
+    userCreated: '用户创建成功',
+    userDeleted: '用户已删除',
+    userUpdated: '用户状态已更新',
+    userLoadFailed: '加载用户列表失败',
+    userCreateFailed: '创建用户失败',
+    userUpdateFailed: '操作失败',
+    uuidCopied: 'UUID 已复制',
+    subCopied: '订阅链接已复制',
+    copyFailed: '复制失败，请手动复制',
+    kvRequiredForUsers: '需要 KV 存储才能管理用户'
   },
   fa: {
     subscriptionCopied: 'لینک اشتراک کپی شد',
-    autoSubscriptionCopied: 'لینک اشتراک تشخیص خودکار کپی شد، کلاینت هنگام دسترسی بر اساس User-Agent به طور خودکار تشخیص داده و قالب مربوطه را برمی‌گرداند'
+    autoSubscriptionCopied: 'لینک اشتراک تشخیص خودکار کپی شد، کلاینت هنگام دسترسی بر اساس User-Agent به طور خودکار تشخیص داده و قالب مربوطه را برمی‌گرداند',
+    loadingUsers: 'در حال بارگذاری...',
+    noUsers: 'کاربری وجود ندارد',
+    userNameCol: 'نام',
+    userStatusCol: 'وضعیت',
+    userActions: 'عملیات',
+    userEnabled: 'فعال',
+    userDisabled: 'غیرفعال',
+    copySub: 'کپی اشتراک',
+    copyUuid: 'کپی UUID',
+    enableUser: 'فعال‌سازی',
+    disableUser: 'غیرفعال‌سازی',
+    deleteUser: 'حذف',
+    confirmDeleteUser: 'آیا از حذف این کاربر مطمئن هستید؟',
+    userCreated: 'کاربر با موفقیت ایجاد شد',
+    userDeleted: 'کاربر حذف شد',
+    userUpdated: 'وضعیت کاربر به‌روزرسانی شد',
+    userLoadFailed: 'بارگذاری لیست کاربران ناموفق',
+    userCreateFailed: 'ایجاد کاربر ناموفق',
+    userUpdateFailed: 'عملیات ناموفق',
+    uuidCopied: 'UUID کپی شد',
+    subCopied: 'لینک اشتراک کپی شد',
+    copyFailed: 'کپی ناموفق، لطفا دستی کپی کنید',
+    kvRequiredForUsers: 'برای مدیریت کاربران به ذخیره‌سازی KV نیاز است'
   }
 };
 function 获取凭据20214(名称20213) {
@@ -6236,6 +6478,7 @@ async function 测试接口() {
 
 // 配置管理相关函数
 async function 检查键值状态() {
+  if (!window.是否管理员) return;
   const 接口网址20134 = window.location.pathname + '/api/config';
   try {
     const 响应20133 = await fetch(接口网址20134);
@@ -6708,6 +6951,20 @@ document.addEventListener('DOMContentLoaded', function () {
   检查系统状态();
   检查键值状态();
   检查加密问候状态();
+  if (window.是否管理员) {
+    加载用户列表();
+  } else {
+    var 订阅地址 = window.location.href.replace(/\/+$/, '') + '/sub';
+    var 订阅显示 = document.getElementById('clientSubscriptionUrl');
+    if (订阅显示) {
+      订阅显示.textContent = 订阅地址;
+      订阅显示.style.display = 'block';
+      订阅显示.style.overflowWrap = 'break-word';
+      订阅显示.style.wordBreak = 'break-all';
+      订阅显示.style.maxWidth = '100%';
+      订阅显示.style.boxSizing = 'border-box';
+    }
+  }
 
   // ECH 开启时自动联动开启仅TLS
   const 加密客户端问候复选框 = document.getElementById('ech');
@@ -7735,6 +7992,144 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 });
+// ===== 用户管理（多用户：管理员创建子账号出售给终端用户）=====
+async function 加载用户列表() {
+  const 容器 = document.getElementById('userList');
+  if (!容器) return;
+  容器.innerHTML = '<div style="color: #7aa9c4;">' + 翻译值20207.loadingUsers + '</div>';
+  try {
+    const 响应 = await fetch(window.location.pathname + '/api/users');
+    if (响应.status === 503) {
+      容器.innerHTML = '<div style="color: #ffb400;">' + 翻译值20207.kvRequiredForUsers + '</div>';
+      return;
+    }
+    if (!响应.ok) {
+      容器.innerHTML = '<div style="color: #ff3860;">' + 翻译值20207.userLoadFailed + ' (' + 响应.status + ')</div>';
+      return;
+    }
+    const 数据 = await 响应.json();
+    if (!数据.success) {
+      容器.innerHTML = '<div style="color: #ff3860;">' + (数据.message || 翻译值20207.userLoadFailed) + '</div>';
+      return;
+    }
+    const 列表 = 数据.data || [];
+    if (列表.length === 0) {
+      容器.innerHTML = '<div style="color: #7aa9c4;">' + 翻译值20207.noUsers + '</div>';
+      return;
+    }
+    let html = '<table style="width: 100%; border-collapse: collapse; font-size: 12px;">';
+    html += '<tr style="color: #00f0ff; text-align: left;">';
+    html += '<th style="padding: 8px; border-bottom: 1px solid rgba(0, 240, 255, 0.3);">' + 翻译值20207.userNameCol + '</th>';
+    html += '<th style="padding: 8px; border-bottom: 1px solid rgba(0, 240, 255, 0.3);">UUID</th>';
+    html += '<th style="padding: 8px; border-bottom: 1px solid rgba(0, 240, 255, 0.3);">' + 翻译值20207.userStatusCol + '</th>';
+    html += '<th style="padding: 8px; border-bottom: 1px solid rgba(0, 240, 255, 0.3);">' + 翻译值20207.userActions + '</th>';
+    html += '</tr>';
+    for (let 索引 = 0; 索引 < 列表.length; 索引++) {
+      const 用户 = 列表[索引];
+      html += '<tr style="border-bottom: 1px solid rgba(0, 240, 255, 0.15);">';
+      html += '<td style="padding: 8px; color: #e6f5ff;">' + (用户.name || '-') + '</td>';
+      html += '<td style="padding: 8px; color: #00f0ff; word-break: break-all;">' + 用户.uuid + '</td>';
+      html += '<td style="padding: 8px;">' + (用户.enabled === false ? '<span style="color: #ff3860;">' + 翻译值20207.userDisabled + '</span>' : '<span style="color: #00ff9d;">' + 翻译值20207.userEnabled + '</span>') + '</td>';
+      html += '<td style="padding: 8px; white-space: nowrap;">';
+      html += '<button type="button" onclick="复制文本(\'' + 用户.subUrl + '\', \'sub\')" style="padding: 5px 9px; margin-right: 5px; background: rgba(0, 240, 255, 0.15); border: 1px solid #00f0ff; color: #00f0ff; cursor: pointer; font-family: Courier New, monospace; font-size: 11px;">' + 翻译值20207.copySub + '</button>';
+      html += '<button type="button" onclick="复制文本(\'' + 用户.uuid + '\', \'uuid\')" style="padding: 5px 9px; margin-right: 5px; background: rgba(163, 71, 255, 0.15); border: 1px solid #a347ff; color: #a347ff; cursor: pointer; font-family: Courier New, monospace; font-size: 11px;">' + 翻译值20207.copyUuid + '</button>';
+      html += '<button type="button" onclick="切换用户状态(\'' + 用户.uuid + '\', ' + (用户.enabled === false ? 'true' : 'false') + ')" style="padding: 5px 9px; margin-right: 5px; background: rgba(255, 178, 0, 0.12); border: 1px solid #ffb400; color: #ffb400; cursor: pointer; font-family: Courier New, monospace; font-size: 11px;">' + (用户.enabled === false ? 翻译值20207.enableUser : 翻译值20207.disableUser) + '</button>';
+      html += '<button type="button" onclick="删除用户(\'' + 用户.uuid + '\')" style="padding: 5px 9px; background: rgba(255, 56, 96, 0.12); border: 1px solid #ff3860; color: #ff3860; cursor: pointer; font-family: Courier New, monospace; font-size: 11px;">' + 翻译值20207.deleteUser + '</button>';
+      html += '</td></tr>';
+    }
+    html += '</table>';
+    容器.innerHTML = html;
+  } catch (错误) {
+    容器.innerHTML = '<div style="color: #ff3860;">' + 翻译值20207.userLoadFailed + ': ' + 错误.message + '</div>';
+  }
+}
+async function 创建新用户() {
+  const 名称输入 = document.getElementById('newUserName');
+  const 名称 = 名称输入 ? 名称输入.value.trim() : '';
+  try {
+    const 响应 = await fetch(window.location.pathname + '/api/users', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: 名称
+      })
+    });
+    const 数据 = await 响应.json();
+    if (!响应.ok || !数据.success) {
+      显示提示(数据.message || 翻译值20207.userCreateFailed, 'error');
+      return;
+    }
+    if (名称输入) 名称输入.value = '';
+    显示提示(翻译值20207.userCreated, 'success');
+    await 加载用户列表();
+  } catch (错误) {
+    显示提示(翻译值20207.userCreateFailed + ': ' + 错误.message, 'error');
+  }
+}
+async function 切换用户状态(唯一标识, 新状态) {
+  try {
+    const 响应 = await fetch(window.location.pathname + '/api/users/' + 唯一标识, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        enabled: 新状态
+      })
+    });
+    const 数据 = await 响应.json();
+    if (!响应.ok || !数据.success) {
+      显示提示(数据.message || 翻译值20207.userUpdateFailed, 'error');
+      return;
+    }
+    显示提示(翻译值20207.userUpdated, 'success');
+    await 加载用户列表();
+  } catch (错误) {
+    显示提示(翻译值20207.userUpdateFailed + ': ' + 错误.message, 'error');
+  }
+}
+async function 删除用户(唯一标识) {
+  if (!confirm(翻译值20207.confirmDeleteUser)) return;
+  try {
+    const 响应 = await fetch(window.location.pathname + '/api/users/' + 唯一标识, {
+      method: 'DELETE'
+    });
+    const 数据 = await 响应.json();
+    if (!响应.ok || !数据.success) {
+      显示提示(数据.message || 翻译值20207.userUpdateFailed, 'error');
+      return;
+    }
+    显示提示(翻译值20207.userDeleted, 'success');
+    await 加载用户列表();
+  } catch (错误) {
+    显示提示(翻译值20207.userUpdateFailed + ': ' + 错误.message, 'error');
+  }
+}
+function 复制文本(文本, 类型) {
+  function 复制完成() {
+    显示提示(类型 === 'uuid' ? 翻译值20207.uuidCopied : 翻译值20207.subCopied, 'success');
+  }
+  function 降级复制() {
+    const 临时 = document.createElement('textarea');
+    临时.value = 文本;
+    document.body.appendChild(临时);
+    临时.select();
+    try {
+      document.execCommand('copy');
+      复制完成();
+    } catch (忽略) {
+      显示提示(翻译值20207.copyFailed, 'error');
+    }
+    document.body.removeChild(临时);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(文本).then(复制完成).catch(降级复制);
+  } else {
+    降级复制();
+  }
+}
 </script>
     </body>
     </html>`;
@@ -7763,7 +8158,8 @@ async function 解析木马头部(缓冲234, 本地值233) {
     };
   }
   const 密码232 = 共享解码器.decode(字节.subarray(0, 值值索引));
-  if (密码232 !== 值224密码) {
+  const 是否有效用户密码 = 有效用户SHA224集合 && 有效用户SHA224集合.has(密码232);
+  if (密码232 !== 值224密码 && !是否有效用户密码) {
     return {
       hasError: true,
       message: "invalid " + atob('dHJvamFu') + " password"
@@ -8014,7 +8410,13 @@ async function 读取扩展超文本头部(本地值180, 唯一标识字符串) 
     const 本地值176 = 缓存[0];
     const 标识175 = 缓存.slice(1, 1 + 16);
     const 唯一标识174 = 解析唯一标识扩展超文本(唯一标识字符串);
-    if (!验证唯一标识扩展超文本(标识175, 唯一标识174)) {
+    let 标识有效 = 验证唯一标识扩展超文本(标识175, 唯一标识174);
+    if (!标识有效 && 有效用户UUID集合 && 有效用户UUID集合.size > 0) {
+      try {
+        标识有效 = 有效用户UUID集合.has(处理格式值(标识175));
+      } catch (忽略) {}
+    }
+    if (!标识有效) {
       return `invalid UUID`;
     }
     const 值长度173 = 缓存[1 + 16];
@@ -8540,6 +8942,178 @@ async function 生成木马链接列表来源新地址列表(列表, 用户, 工
     }
   }
   return 链接列表;
+}
+async function 处理用户接口(请求) {
+  if (!键值存储) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'KV存储未配置',
+      message: '需要配置KV存储才能使用用户管理功能'
+    }), {
+      status: 503,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+  }
+  try {
+    const 请求网址 = new URL(请求.url);
+    const 路径部分列表 = 请求网址.pathname.split('/').filter(参数值 => 参数值);
+    const 接口索引 = 路径部分列表.indexOf('api');
+    const 路径段 = 接口索引 >= 0 ? 路径部分列表.slice(接口索引 + 2) : [];
+    const 目标唯一标识 = 路径段.length > 0 ? 路径段[路径段.length - 1].toLowerCase() : '';
+    if (请求.method === 'GET') {
+      const 列表 = await 读取用户列表(true);
+      const 基础地址 = 请求网址.origin;
+      const 数据 = 列表.map(用户 => ({
+        ...用户,
+        subUrl: 基础地址 + '/' + 用户.uuid + '/sub',
+        pageUrl: 基础地址 + '/' + 用户.uuid
+      }));
+      return new Response(JSON.stringify({
+        success: true,
+        count: 数据.length,
+        data: 数据
+      }), {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    }
+    if (请求.method === 'POST') {
+      const 主体 = await 请求.json().catch(() => ({}));
+      const 名称 = String(主体.name || '').trim().slice(0, 50);
+      let 唯一标识 = String(主体.uuid || '').trim().toLowerCase();
+      if (唯一标识 && !是否有效格式(唯一标识)) {
+        return new Response(JSON.stringify({
+          success: false,
+          message: 'UUID格式无效'
+        }), {
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+      if (!唯一标识) 唯一标识 = 生成新唯一标识();
+      if (唯一标识 === 认证令牌) {
+        return new Response(JSON.stringify({
+          success: false,
+          message: '不能使用管理员UUID创建用户'
+        }), {
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+      const 列表 = await 读取用户列表(true);
+      if (列表.some(用户 => 用户.uuid === 唯一标识)) {
+        return new Response(JSON.stringify({
+          success: false,
+          message: '该UUID已存在'
+        }), {
+          status: 409,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+      const 用户 = {
+        id: 唯一标识,
+        name: 名称,
+        uuid: 唯一标识,
+        enabled: 主体.enabled === false ? false : true,
+        createdAt: new Date().toISOString()
+      };
+      列表.push(用户);
+      await 保存用户列表(列表);
+      await 刷新有效用户集合();
+      return new Response(JSON.stringify({
+        success: true,
+        message: '用户已创建',
+        data: 用户
+      }), {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    }
+    if (目标唯一标识 && 是否有效格式(目标唯一标识)) {
+      const 列表 = await 读取用户列表(true);
+      const 索引 = 列表.findIndex(用户 => 用户.uuid === 目标唯一标识);
+      if (索引 < 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          message: '用户不存在'
+        }), {
+          status: 404,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+      if (请求.method === 'PATCH') {
+        const 主体 = await 请求.json().catch(() => ({}));
+        if (主体.name !== undefined) 列表[索引].name = String(主体.name).trim().slice(0, 50);
+        if (主体.enabled !== undefined) 列表[索引].enabled = 主体.enabled === true || 主体.enabled === 'yes' || 主体.enabled === 'on';
+        await 保存用户列表(列表);
+        await 刷新有效用户集合();
+        return new Response(JSON.stringify({
+          success: true,
+          message: '用户已更新',
+          data: 列表[索引]
+        }), {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+      if (请求.method === 'DELETE') {
+        if (目标唯一标识 === 认证令牌) {
+          return new Response(JSON.stringify({
+            success: false,
+            message: '不能删除管理员账号'
+          }), {
+            status: 400,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          });
+        }
+        列表.splice(索引, 1);
+        await 保存用户列表(列表);
+        await 刷新有效用户集合();
+        return new Response(JSON.stringify({
+          success: true,
+          message: '用户已删除'
+        }), {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+    }
+    return new Response(JSON.stringify({
+      success: false,
+      message: '不支持的请求方法'
+    }), {
+      status: 405,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (错误) {
+    return new Response(JSON.stringify({
+      success: false,
+      message: '处理请求失败: ' + 错误.message
+    }), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+  }
 }
 async function 处理配置接口(请求54, 环境值 = {}) {
   if (请求54.method === 'GET') {

@@ -1,0 +1,12 @@
+name = "cfnew"
+main = "明文源吗"
+compatibility_date = "2026-01-20"
+compatibility_flags = ["nodejs_compat"]
+
+# KV namespace for config storage (binding name: C)
+# The namespace ID will be auto-configured by the deploy workflow
+[[kv_namespaces]]
+binding = "C"
+id = "AUTO_SETUP_KV"
+# preview_id is used by `wrangler dev` - set to same as id for local dev
+preview_id = "AUTO_SETUP_KV"
