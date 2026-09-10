@@ -8,5 +8,4 @@ compatibility_flags = ["nodejs_compat"]
 [[kv_namespaces]]
 binding = "C"
 id = "412fae1091d1413395c8d8c17b334487"
-# preview_id is used by `wrangler dev` - set to same as id for local dev
 preview_id = "412fae1091d1413395c8d8c17b334487"
